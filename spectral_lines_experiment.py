@@ -35,6 +35,12 @@ angle_scale_at_0th_order = 59                                       # deg  (At t
 alpha_deg = abs(angle_scale_at_0th_order - angle_scale_at_i_is_0)   # deg
 alpha_uncertainty_deg = 2 * reading_uncertainty_deg                 # deg  (estimated reading uncertainty on the angle scale)
 
+# phi is measured from the 'mirror' / 0th-order position -- so its zero
+# point on the raw angle scale is angle_scale_at_0th_order (59), NOT
+# alpha_deg (6, which is just the alpha-vs-i=0 *difference*, a separate
+# physical quantity that only ever appears via cos(alpha)).
+zero_point_reading_deg = angle_scale_at_0th_order                   # deg  (raw scale reading where phi = 0)
+
 # Literature values (nm), for the agreement checks and the plots.
 HG_LITERATURE_NM = {
     'violet': 404.66,
@@ -125,13 +131,19 @@ def group_by_colour(runs):
 def get_phi(reading_deg):
     """
     phi is the angle between a given line's reading and the 0th-order
-    ('mirror') reading alpha_deg.
+    ('mirror') reading -- i.e. the raw angle-scale value recorded when the
+    grating was rotated so the 0th order landed on the chosen point
+    (zero_point_reading_deg = angle_scale_at_0th_order).
+
+    This is NOT alpha_deg: alpha is a different quantity (how far the
+    grating sits from the separate i=0 calibration reading), not phi's
+    zero point on the scale.
 
     reading_deg : angle scale reading for this spectral line (deg)
 
     Returns phi in degrees.
     """
-    return reading_deg - alpha_deg
+    return reading_deg - zero_point_reading_deg
 
 def get_wavelength(order, reading_deg):
     """
@@ -163,9 +175,11 @@ def get_wavelength_uncertainty(order, reading_deg):
         dlambda/dphi   = -2*cos(alpha)*cos(phi) / (m*N)
 
     phi's own uncertainty combines the line reading and the zero-point
-    (alpha) reading in quadrature, since both readings are independent:
+    reading (angle_scale_at_0th_order) in quadrature, since both are
+    independent raw angle-scale readings with the same instrument
+    uncertainty:
 
-        u_phi = sqrt(reading_uncertainty_deg^2 + alpha_uncertainty_deg^2)
+        u_phi = sqrt(reading_uncertainty_deg^2 + reading_uncertainty_deg^2)
 
     This treats the input uncertainties as independent (adding their
     contributions in quadrature), unlike a simple sum, which implicitly
@@ -179,7 +193,7 @@ def get_wavelength_uncertainty(order, reading_deg):
     alpha_rad = math.radians(alpha_deg)
     phi_rad = math.radians(get_phi(reading_deg))
     u_alpha_rad = math.radians(alpha_uncertainty_deg)
-    u_phi_rad = math.radians(math.hypot(reading_uncertainty_deg, alpha_uncertainty_deg))
+    u_phi_rad = math.radians(math.hypot(reading_uncertainty_deg, reading_uncertainty_deg))
 
     # Partial derivatives of lambda (in m) with respect to each input
     dlambda_dalpha = 2 * math.sin(alpha_rad) * math.sin(phi_rad) / (order * N_per_m)
@@ -200,33 +214,38 @@ def get_u(reading_deg):
     This is the angle later needed for the line-splitting calculation
     (Delta_lambda = cos(u)/(m*N) * Delta_u).
 
-    Substituting phi = reading_deg - alpha_deg gives u directly in terms of
-    the raw reading: u = alpha - (reading - alpha) = 2*alpha - reading.
+    Built directly from get_phi (reading_deg - zero_point_reading_deg),
+    so it automatically stays consistent with however phi is defined --
+    no separate algebraic shortcut to keep in sync.
 
     reading_deg : angle scale reading for this spectral line (deg)
 
     Returns u in degrees.
     """
-    return 2 * alpha_deg - reading_deg
+    return alpha_deg - get_phi(reading_deg)
 
 def get_u_uncertainty():
     """
-    Propagate uncertainty in alpha_deg and reading_deg into an uncertainty
-    on u, using exact partial-derivative error propagation.
+    Propagate uncertainty in alpha_deg, reading_deg and the zero-point
+    reading into an uncertainty on u, using exact partial-derivative error
+    propagation.
 
-    From u = 2*alpha - reading:
+    From u = alpha - phi = alpha - reading + zero_point_reading_deg:
 
-        du/dalpha  =  2
-        du/dreading = -1
+        du/dalpha       =  1
+        du/dreading      = -1
+        du/dzero_point   =  1
 
-        u_u^2 = (2*u_alpha)^2 + u_reading^2
+        u_u^2 = u_alpha^2 + u_reading^2 + u_zero_point^2
 
-    Same instrument reading uncertainty applies to every row, so this
-    doesn't depend on which line/order you're looking at.
+    zero_point_reading_deg is itself just a raw angle-scale reading, so it
+    carries the same reading_uncertainty_deg as any other row. Same
+    instrument reading uncertainty applies to every row, so this doesn't
+    depend on which line/order you're looking at.
 
     Returns the uncertainty in u, in degrees.
     """
-    return math.hypot(2 * alpha_uncertainty_deg, reading_uncertainty_deg)
+    return math.sqrt(alpha_uncertainty_deg ** 2 + reading_uncertainty_deg ** 2 + reading_uncertainty_deg ** 2)
 
 def weighted_average(values, uncertainties):
     """
