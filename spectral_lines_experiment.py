@@ -1,0 +1,445 @@
+"""Imports"""
+
+# External imports
+import csv
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
+
+#################################################################################################################################################################
+"""Plot styling"""
+
+# Increase font sizes across every figure (labels, ticks, legends) so plots
+# stay legible once shrunk down to fit the report's column width.
+plt.rcParams.update({
+    'font.size': 14,
+    'axes.labelsize': 16,
+    'xtick.labelsize': 13,
+    'ytick.labelsize': 13,
+    'legend.fontsize': 13,
+    'figure.titlesize': 16,
+})
+
+#################################################################################################################################################################
+"""Constants"""
+
+lamp = 'Hg'                                             # which lamp this run's data.csv belongs to ('Hg' or 'Na')
+
+N_lines_per_mm = 600                                    # lines/mm  (grating used for this setup)
+N_per_m = N_lines_per_mm * 1e3                           # lines/m   (converted once, used throughout)
+
+# alpha is read off the angle scale during autocollimation (see manual step 2:
+# rotate the grating until the 0th order falls on the chosen screen point).
+# It is fixed for the whole session, so -- like d_12 in compute_g.py -- it
+# lives here as a constant rather than being loaded per-row from data.csv.
+alpha_deg = 180.00                                       # deg  (angle scale reading at the 0th-order / 'mirror' position)
+alpha_uncertainty_deg = 0.02                             # deg  (estimated reading uncertainty on the angle scale)
+
+reading_uncertainty_deg = 0.02                           # deg  (estimated reading uncertainty on the angle scale, per line)
+
+# Literature values (nm), for the agreement checks and the plots.
+HG_LITERATURE_NM = {
+    'violet': 404.66,
+    'blue': 435.83,
+    'green': 546.07,
+    'yellow1': 576.96,
+    'yellow2': 579.07,
+}
+NA_LITERATURE_NM = {
+    'yellow1': 589.00,
+    'yellow2': 589.59,
+}
+LITERATURE_NM = HG_LITERATURE_NM if lamp == 'Hg' else NA_LITERATURE_NM
+
+#################################################################################################################################################################
+"""Functions"""
+
+def _style_axes(ax, include_x_zero=False, include_y_zero=False):
+    """
+    Apply consistent, rubric-compliant styling to a figure axis:
+
+    - No in-figure title (the caption belongs in the report text, not the
+      plot itself).
+    - Tick spacing restricted to legible steps of 1, 2 or 5 (via
+      MaxNLocator), instead of matplotlib's arbitrary default spacing.
+    - A light grid, since it makes it easier to read values off the axes
+      precisely -- helpful in both colour and black-and-white printouts.
+    - Optionally forces 0 onto an axis where that is a meaningful physical
+      reference point.
+
+    ax : a matplotlib Axes object
+    """
+    ax.set_title('')
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=8, steps=[1, 2, 2.5, 5, 10]))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=8, steps=[1, 2, 2.5, 5, 10]))
+    if include_x_zero:
+        left, right = ax.get_xlim()
+        ax.set_xlim(left=min(0, left), right=right)
+    if include_y_zero:
+        bottom, top = ax.get_ylim()
+        ax.set_ylim(bottom=min(0, bottom), top=top)
+    ax.grid(True, linewidth=0.4, alpha=0.5)
+
+def load_data(filepath):
+    """
+    Read the raw angle readings from a CSV file.
+
+    Expected columns: colour, order, reading_deg (with a header row to skip).
+
+    Returns a list of tuples: (colour, order, reading_deg)
+    """
+    runs = []
+    with open(filepath, newline='') as f:
+        reader = csv.reader(f)
+        next(reader)  # skip header row
+        for row in reader:
+            if not row:  # skip blank lines (e.g. trailing newline at end of file)
+                continue
+            colour, order, reading_deg = row
+            # Convert order and reading to their proper types before storing
+            runs.append((colour, int(order), float(reading_deg)))
+    return runs
+
+def group_by_colour(runs):
+    """
+    Group angle readings by colour (i.e. by which spectral line was measured).
+
+    runs : list of (colour, order, reading_deg) tuples
+
+    Returns a dict mapping colour -> list of (order, reading_deg) tuples for
+    that colour.
+    """
+    groups = {}
+    for colour, order, reading_deg in runs:
+        # setdefault creates an empty list the first time this colour is seen
+        groups.setdefault(colour, []).append((order, reading_deg))
+    return groups
+
+
+def get_phi(reading_deg):
+    """
+    phi is the angle between a given line's reading and the 0th-order
+    ('mirror') reading alpha_deg.
+
+    reading_deg : angle scale reading for this spectral line (deg)
+
+    Returns phi in degrees.
+    """
+    return reading_deg - alpha_deg
+
+def get_wavelength(order, reading_deg):
+    """
+    Compute lambda from eq. (II8_Que8): 2*cos(alpha)*sin(phi) = -m*N*lambda
+
+    order       : diffraction order m (nonzero integer)
+    reading_deg : angle scale reading for this spectral line (deg)
+
+    Returns lambda in nm.
+    """
+    phi_rad = math.radians(get_phi(reading_deg))
+    alpha_rad = math.radians(alpha_deg)
+    # Formula gives lambda in metres directly, since N_per_m is lines/m
+    lambda_m = -2 * math.cos(alpha_rad) * math.sin(phi_rad) / (order * N_per_m)
+    # Convert m -> nm
+    return lambda_m * 1e9
+
+def get_wavelength_uncertainty(order, reading_deg):
+    """
+    Propagate uncertainty in alpha_deg and phi (= reading_deg - alpha_deg)
+    into an uncertainty on lambda, using exact partial-derivative
+    (first-order) error propagation:
+
+        u_lambda^2 = (dlambda/dalpha)^2 * u_alpha^2 + (dlambda/dphi)^2 * u_phi^2
+
+    From lambda = -2*cos(alpha)*sin(phi) / (m*N):
+
+        dlambda/dalpha =  2*sin(alpha)*sin(phi) / (m*N)
+        dlambda/dphi   = -2*cos(alpha)*cos(phi) / (m*N)
+
+    phi's own uncertainty combines the line reading and the zero-point
+    (alpha) reading in quadrature, since both readings are independent:
+
+        u_phi = sqrt(reading_uncertainty_deg^2 + alpha_uncertainty_deg^2)
+
+    This treats the input uncertainties as independent (adding their
+    contributions in quadrature), unlike a simple sum, which implicitly
+    assumes worst-case correlated errors and overestimates u_lambda.
+
+    order       : diffraction order m (nonzero integer)
+    reading_deg : angle scale reading for this spectral line (deg)
+
+    Returns the uncertainty in lambda, in nm.
+    """
+    alpha_rad = math.radians(alpha_deg)
+    phi_rad = math.radians(get_phi(reading_deg))
+    u_alpha_rad = math.radians(alpha_uncertainty_deg)
+    u_phi_rad = math.radians(math.hypot(reading_uncertainty_deg, alpha_uncertainty_deg))
+
+    # Partial derivatives of lambda (in m) with respect to each input
+    dlambda_dalpha = 2 * math.sin(alpha_rad) * math.sin(phi_rad) / (order * N_per_m)
+    dlambda_dphi = -2 * math.cos(alpha_rad) * math.cos(phi_rad) / (order * N_per_m)
+
+    # Combine contributions in quadrature (independent-error propagation)
+    lambda_m_uncertainty = math.sqrt(
+        (dlambda_dalpha * u_alpha_rad) ** 2 +
+        (dlambda_dphi * u_phi_rad) ** 2
+    )
+
+    # Convert m -> nm
+    return lambda_m_uncertainty * 1e9
+
+def compute_group_results(groups):
+    """
+    For each colour group: compute lambda and its uncertainty for every
+    order measured, print a summary row per line, and compute the weighted
+    average (per the Appendix formulas) across all orders of that colour.
+
+        w_i = 1/u(lambda_i)^2
+        lambda_bar = sum(w_i * lambda_i) / sum(w_i)
+        u(lambda_bar) = sqrt(1 / sum(w_i))
+
+    groups : dict mapping colour -> list of (order, reading_deg) tuples
+
+    Returns two dicts (both keyed by colour):
+      group_lambda_bar      : weighted-average lambda per colour (nm)
+      group_lambda_bar_unc  : uncertainty on that average per colour (nm)
+    """
+    group_lambda_bar = {}
+    group_lambda_bar_unc = {}
+
+    # Print table header
+    print(f"{'colour':>10} {'order':>6} {'phi (deg)':>10} {'lambda (nm)':>14} {'u(lambda)':>10}")
+
+    for colour in sorted(groups):
+        lambdas = []
+        uncertainties = []
+        for order, reading_deg in groups[colour]:
+            lam = get_wavelength(order, reading_deg)
+            u_lam = get_wavelength_uncertainty(order, reading_deg)
+            phi_deg = get_phi(reading_deg)
+            print(f"{colour:>10} {order:6d} {phi_deg:10.3f} {lam:14.3f} {u_lam:10.3f}")
+            lambdas.append(lam)
+            uncertainties.append(u_lam)
+
+        lambda_bar, u_lambda_bar = weighted_average(lambdas, uncertainties)
+        group_lambda_bar[colour] = lambda_bar
+        group_lambda_bar_unc[colour] = u_lambda_bar
+
+    return group_lambda_bar, group_lambda_bar_unc
+
+
+def weighted_average(values, uncertainties):
+    """
+    Weighted average of repeated measurements of the same quantity, per the
+    Appendix formulas:
+
+        w_i = 1 / u(lambda_i)^2
+        lambda_bar = sum(w_i * lambda_i) / sum(w_i)
+        u(lambda_bar) = sqrt(1 / sum(w_i))
+
+    Datapoints with a high uncertainty get a lower weight, and datapoints
+    with a low uncertainty get a high weight (are more important).
+
+    values, uncertainties : equal-length lists of lambda_i and u(lambda_i)
+
+    Returns (lambda_bar, u_lambda_bar).
+    """
+    weights = [1 / u ** 2 for u in uncertainties]
+    lambda_bar = sum(w * v for w, v in zip(weights, values)) / sum(weights)
+    u_lambda_bar = math.sqrt(1 / sum(weights))
+    return lambda_bar, u_lambda_bar
+
+
+def agreement_metrics(a, u_a, b, u_b):
+    """
+    Compute the agreement metrics between two measured values, per the
+    agreement criterion:
+
+        |v| = |a - b| > 2*sqrt(u_a^2 + u_b^2) = 2*u_v  =>  NOT in good agreement
+
+    a, u_a  : first value and its uncertainty
+    b, u_b  : second value and its uncertainty
+
+    Returns (v, u_v, in_agreement), where in_agreement is True if the two
+    values ARE in good agreement (v <= u_v).
+    """
+    v = abs(a - b)
+    u_v = 2 * np.sqrt(u_a ** 2 + u_b ** 2)
+    return v, u_v, v <= u_v
+
+def check_agreement(a, u_a, b, u_b, label_a='a', label_b='b'):
+    """
+    Check whether two measured values are in good agreement (see
+    agreement_metrics for the criterion used), and print a one-line
+    summary of the result.
+
+    a, u_a            : first value and its uncertainty
+    b, u_b            : second value and its uncertainty
+    label_a, label_b  : optional names used in the printed message
+
+    Prints the result and returns True if a and b ARE in good agreement,
+    False otherwise.
+    """
+    v, u_v, in_agreement = agreement_metrics(a, u_a, b, u_b)
+
+    verdict = "ARE in good agreement" if in_agreement else "are NOT in good agreement"
+    comparison = "<=" if in_agreement else ">"
+    print(f"{label_a} = {a:.4f} +/- {u_a:.4f}  and  {label_b} = {b:.4f} +/- {u_b:.4f}  "
+          f"{verdict}  (|v| = {v:.4f} {comparison} 2u_v = {u_v:.4f})")
+
+    return in_agreement
+
+def print_literature_agreement_table(group_lambda_bar, group_lambda_bar_unc):
+    """
+    Print a table checking each colour's weighted-average lambda against
+    its literature value, using the same agreement criterion as
+    check_agreement:
+
+        |v| = |a - b| > 2*sqrt(u_a^2 + u_b^2) = 2*u_v  =>  NOT in good agreement
+
+    Literature values are treated as exact (u_literature = 0).
+
+    group_lambda_bar      : dict colour -> weighted-average lambda (nm)
+    group_lambda_bar_unc  : dict colour -> uncertainty on that average (nm)
+    """
+    print(f"{'colour':>10} {'lambda_bar (nm)':>16} {'u':>8} {'literature (nm)':>16} "
+          f"{'v':>8} {'2u_v':>8} {'Agreement':>12}")
+
+    for colour in sorted(group_lambda_bar):
+        if colour not in LITERATURE_NM:
+            continue
+        lam_bar = group_lambda_bar[colour]
+        u_lam_bar = group_lambda_bar_unc[colour]
+        lit = LITERATURE_NM[colour]
+
+        v, u_v, agree = agreement_metrics(lam_bar, u_lam_bar, lit, 0.0)
+        verdict = "Agree" if agree else "Disagree"
+        print(f"{colour:>10} {lam_bar:16.3f} {u_lam_bar:8.3f} {lit:16.3f} "
+              f"{v:8.3f} {u_v:8.3f} {verdict:>12}")
+
+
+def get_delta_lambda(order, reading_deg, delta_u_rad):
+    """
+    Compute the wavelength splitting of a resolved doublet from eq.
+    (deltalabda): Delta_lambda = cos(u)/(m*N) * Delta_u
+
+    order        : diffraction order m of the doublet
+    reading_deg  : angle scale reading for this line (used to get u = alpha - phi)
+    delta_u_rad  : angular separation of the doublet on the camera (rad)
+
+    Returns Delta_lambda in nm.
+    """
+    alpha_rad = math.radians(alpha_deg)
+    phi_rad = math.radians(get_phi(reading_deg))
+    u_rad = alpha_rad - phi_rad
+    delta_lambda_m = math.cos(u_rad) / (order * N_per_m) * delta_u_rad
+    return delta_lambda_m * 1e9
+
+def get_delta_lambda_uncertainty(order, reading_deg, delta_u_rad, u_delta_u_rad):
+    """
+    Propagate uncertainty in u and Delta_u into an uncertainty on
+    Delta_lambda, using exact partial-derivative error propagation, the
+    same way as get_wavelength_uncertainty:
+
+        d(Delta_lambda)/du    = -sin(u)/(m*N) * Delta_u
+        d(Delta_lambda)/d(Du) =  cos(u)/(m*N)
+
+    order          : diffraction order m of the doublet
+    reading_deg    : angle scale reading for this line (used to get u)
+    delta_u_rad    : angular separation of the doublet on the camera (rad)
+    u_delta_u_rad  : uncertainty in delta_u_rad (rad)
+
+    Returns the uncertainty in Delta_lambda, in nm.
+    """
+    alpha_rad = math.radians(alpha_deg)
+    phi_rad = math.radians(get_phi(reading_deg))
+    u_rad = alpha_rad - phi_rad
+    u_u_rad = math.radians(reading_uncertainty_deg)  # reuses the reading uncertainty for u
+
+    d_du = -math.sin(u_rad) / (order * N_per_m) * delta_u_rad
+    d_ddu = math.cos(u_rad) / (order * N_per_m)
+
+    delta_lambda_m_uncertainty = math.sqrt((d_du * u_u_rad) ** 2 + (d_ddu * u_delta_u_rad) ** 2)
+    return delta_lambda_m_uncertainty * 1e9
+
+
+def resolving_power(lam_nm, delta_lam_nm):
+    """
+    R = lambda / Delta_lambda  (eq. Resolving_Power)
+
+    lam_nm       : wavelength (nm)
+    delta_lam_nm : smallest observable difference in wavelength (nm)
+
+    Returns the (dimensionless) resolving power.
+    """
+    return lam_nm / delta_lam_nm
+
+def theoretical_resolving_power(order, N_total_lines):
+    """
+    R_theor = m * N_tot  (eq. Theor_Resolving_Power)
+
+    order          : diffraction order m
+    N_total_lines  : total number of grating lines illuminated
+
+    Returns the (dimensionless) theoretical resolving power.
+    """
+    return order * N_total_lines
+
+
+def plot_wavelength_vs_order(groups):
+    """
+    Plot the individual lambda measurements (with error bars) against
+    order m, one series per colour, with literature values overlaid as
+    dotted horizontal lines.
+
+    groups : dict mapping colour -> list of (order, reading_deg) tuples
+    """
+    fig, ax = plt.subplots()
+
+    for colour in sorted(groups):
+        orders = [order for order, reading_deg in groups[colour]]
+        lambdas = [get_wavelength(order, reading_deg) for order, reading_deg in groups[colour]]
+        uncertainties = [get_wavelength_uncertainty(order, reading_deg)
+                          for order, reading_deg in groups[colour]]
+
+        line = ax.errorbar(orders, lambdas, yerr=uncertainties, fmt='o',
+                            markersize=4, capsize=3, label=colour)
+        if colour in LITERATURE_NM:
+            ax.axhline(LITERATURE_NM[colour], linestyle=':', linewidth=1,
+                        color=line[0].get_color())
+
+    ax.set_xlabel('order $m$')
+    ax.set_ylabel(r'$\lambda$ (nm)')
+    _style_axes(ax)
+    ax.legend()
+    fig.tight_layout()
+    plt.show()
+
+#################################################################################################################################################################
+"""Main"""
+
+def main():
+    """
+    Run the full analysis pipeline:
+    load data -> group by colour -> compute lambda per line (algebraic
+    method) and the weighted average per colour -> check agreement with
+    literature -> plot results.
+    """
+
+    runs = load_data('Data/data.csv')
+    groups = group_by_colour(runs)
+    group_lambda_bar, group_lambda_bar_unc = compute_group_results(groups)
+    print()
+    print_literature_agreement_table(group_lambda_bar, group_lambda_bar_unc)
+    plot_wavelength_vs_order(groups)
+
+    # Example: resolving power for a resolved doublet (replace with real
+    # Delta_u measured from the camera image, in radians)
+    # delta_lam = get_delta_lambda(order=1, reading_deg=..., delta_u_rad=...)
+    # R_measured = resolving_power(lam_nm=577.0, delta_lam_nm=delta_lam)
+    # R_theor = theoretical_resolving_power(order=1, N_total_lines=N_lines_per_mm * 30)  # e.g. 30 mm illuminated
+    # print(f"Measured R ~ {R_measured:.0f}, theoretical R = {R_theor:.0f}")
+
+if __name__ == '__main__':
+    main()
