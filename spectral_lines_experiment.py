@@ -311,50 +311,10 @@ def compute_group_results(groups):
     return group_lambda_bar, group_lambda_bar_unc
 
 
-def agreement_metrics(a, u_a, b, u_b):
-    """
-    Compute the agreement metrics between two measured values, per the
-    agreement criterion:
-
-        |v| = |a - b| > 2*sqrt(u_a^2 + u_b^2) = 2*u_v  =>  NOT in good agreement
-
-    a, u_a  : first value and its uncertainty
-    b, u_b  : second value and its uncertainty
-
-    Returns (v, u_v, in_agreement), where in_agreement is True if the two
-    values ARE in good agreement (v <= u_v).
-    """
-    v = abs(a - b)
-    u_v = 2 * np.sqrt(u_a ** 2 + u_b ** 2)
-    return v, u_v, v <= u_v
-
-def check_agreement(a, u_a, b, u_b, label_a='a', label_b='b'):
-    """
-    Check whether two measured values are in good agreement (see
-    agreement_metrics for the criterion used), and print a one-line
-    summary of the result.
-
-    a, u_a            : first value and its uncertainty
-    b, u_b            : second value and its uncertainty
-    label_a, label_b  : optional names used in the printed message
-
-    Prints the result and returns True if a and b ARE in good agreement,
-    False otherwise.
-    """
-    v, u_v, in_agreement = agreement_metrics(a, u_a, b, u_b)
-
-    verdict = "ARE in good agreement" if in_agreement else "are NOT in good agreement"
-    comparison = "<=" if in_agreement else ">"
-    print(f"{label_a} = {a:.4f} +/- {u_a:.4f}  and  {label_b} = {b:.4f} +/- {u_b:.4f}  "
-          f"{verdict}  (|v| = {v:.4f} {comparison} 2u_v = {u_v:.4f})")
-
-    return in_agreement
-
 def print_literature_agreement_table(group_lambda_bar, group_lambda_bar_unc):
     """
-    Print a table checking each colour's weighted-average lambda against
-    its literature value, using the same agreement criterion as
-    check_agreement:
+    Check each colour's weighted-average lambda against its literature
+    value and print a summary table, per the agreement criterion:
 
         |v| = |a - b| > 2*sqrt(u_a^2 + u_b^2) = 2*u_v  =>  NOT in good agreement
 
@@ -373,7 +333,9 @@ def print_literature_agreement_table(group_lambda_bar, group_lambda_bar_unc):
         u_lam_bar = group_lambda_bar_unc[colour]
         lit = LITERATURE_NM[colour]
 
-        v, u_v, agree = agreement_metrics(lam_bar, u_lam_bar, lit, 0.0)
+        v = abs(lam_bar - lit)
+        u_v = 2 * np.sqrt(u_lam_bar ** 2)
+        agree = v <= u_v
         verdict = "Agree" if agree else "Disagree"
         print(f"{colour:>10} {lam_bar:16.3f} {u_lam_bar:8.3f} {lit:16.3f} "
               f"{v:8.3f} {u_v:8.3f} {verdict:>12}")
