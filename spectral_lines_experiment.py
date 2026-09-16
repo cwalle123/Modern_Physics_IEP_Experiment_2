@@ -196,9 +196,9 @@ def get_wavelength_uncertainty(order, reading_deg):
 
 def get_u(reading_deg):
     """
-    u is the angle of reflection, u = alpha - phi (manual, eq. angle_inc_refl).
+    u is the angle of reflection, u = alpha - phi.
     This is the angle later needed for the line-splitting calculation
-    (eq. deltalabda: Delta_lambda = cos(u)/(m*N) * Delta_u).
+    (Delta_lambda = cos(u)/(m*N) * Delta_u).
 
     Substituting phi = reading_deg - alpha_deg gives u directly in terms of
     the raw reading: u = alpha - (reading - alpha) = 2*alpha - reading.
@@ -228,17 +228,33 @@ def get_u_uncertainty():
     """
     return math.hypot(2 * alpha_uncertainty_deg, reading_uncertainty_deg)
 
+def weighted_average(values, uncertainties):
+    """
+    Weighted average of repeated measurements of the same quantity, per the
+    Appendix formulas:
+
+        w_i = 1 / u(lambda_i)^2
+        lambda_bar = sum(w_i * lambda_i) / sum(w_i)
+        u(lambda_bar) = sqrt(1 / sum(w_i))
+
+    Datapoints with a high uncertainty get a lower weight, and datapoints
+    with a low uncertainty get a high weight (are more important).
+
+    values, uncertainties : equal-length lists of lambda_i and u(lambda_i)
+
+    Returns (lambda_bar, u_lambda_bar).
+    """
+    weights = [1 / u ** 2 for u in uncertainties]
+    lambda_bar = sum(w * v for w, v in zip(weights, values)) / sum(weights)
+    u_lambda_bar = math.sqrt(1 / sum(weights))
+    return lambda_bar, u_lambda_bar
+
 def compute_group_results(groups):
     """
     For each colour group: compute phi, lambda, u and their uncertainties
-    for every order measured, print one row per line (manual, experimental
-    phase step 3: colour, order, reading, phi, lambda, u(lambda)), and
+    for every order measured, print one row per line, and
     compute the weighted average of lambda (per the Appendix formulas)
     across all orders of that colour.
-
-        w_i = 1/u(lambda_i)^2
-        lambda_bar = sum(w_i * lambda_i) / sum(w_i)
-        u(lambda_bar) = sqrt(1 / sum(w_i))
 
     groups : dict mapping colour -> list of (order, reading_deg) tuples
 
@@ -274,28 +290,6 @@ def compute_group_results(groups):
         group_lambda_bar_unc[colour] = u_lambda_bar
 
     return group_lambda_bar, group_lambda_bar_unc
-
-
-def weighted_average(values, uncertainties):
-    """
-    Weighted average of repeated measurements of the same quantity, per the
-    Appendix formulas:
-
-        w_i = 1 / u(lambda_i)^2
-        lambda_bar = sum(w_i * lambda_i) / sum(w_i)
-        u(lambda_bar) = sqrt(1 / sum(w_i))
-
-    Datapoints with a high uncertainty get a lower weight, and datapoints
-    with a low uncertainty get a high weight (are more important).
-
-    values, uncertainties : equal-length lists of lambda_i and u(lambda_i)
-
-    Returns (lambda_bar, u_lambda_bar).
-    """
-    weights = [1 / u ** 2 for u in uncertainties]
-    lambda_bar = sum(w * v for w, v in zip(weights, values)) / sum(weights)
-    u_lambda_bar = math.sqrt(1 / sum(weights))
-    return lambda_bar, u_lambda_bar
 
 
 def agreement_metrics(a, u_a, b, u_b):
@@ -475,7 +469,7 @@ def main():
     then re-run.
     """
 
-    runs = load_data('Data/data.csv')
+    runs = load_data('test_data_Hg.csv')
     groups = group_by_colour(runs)
     group_lambda_bar, group_lambda_bar_unc = compute_group_results(groups)
     print()
