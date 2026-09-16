@@ -26,7 +26,7 @@ plt.rcParams.update({
 
 lamp = 'Hg'                 # which lamp this run's data.csv belongs to ('Hg' or 'Na')
 
-Hg_N_lines_per_mm = 500     # lines/mm  (grating used for this setup)
+Hg_N_lines_per_mm = 1800    # lines/mm  (grating used for this setup)
 Na_N_lines_per_mm= 500      # lines/mm  (grating used for this setup)
 
 reading_uncertainty_deg = 1                                         # deg  (estimated reading uncertainty on the angle scale, per line)
@@ -34,12 +34,6 @@ angle_scale_at_i_is_0 = 53                                          # deg  (when
 angle_scale_at_0th_order = 59                                       # deg  (At the 0th order, the angle scale reads 59 +-1 deg)
 alpha_deg = abs(angle_scale_at_0th_order - angle_scale_at_i_is_0)   # deg
 alpha_uncertainty_deg = 2 * reading_uncertainty_deg                 # deg  (estimated reading uncertainty on the angle scale)
-
-# phi is measured from the 'mirror' / 0th-order position -- so its zero
-# point on the raw angle scale is angle_scale_at_0th_order (59), NOT
-# alpha_deg (6, which is just the alpha-vs-i=0 *difference*, a separate
-# physical quantity that only ever appears via cos(alpha)).
-zero_point_reading_deg = angle_scale_at_0th_order                   # deg  (raw scale reading where phi = 0)
 
 # Literature values (nm), for the agreement checks and the plots.
 HG_LITERATURE_NM = {
@@ -133,7 +127,6 @@ def get_phi(reading_deg):
     phi is the angle between a given line's reading and the 0th-order
     ('mirror') reading -- i.e. the raw angle-scale value recorded when the
     grating was rotated so the 0th order landed on the chosen point
-    (zero_point_reading_deg = angle_scale_at_0th_order).
 
     This is NOT alpha_deg: alpha is a different quantity (how far the
     grating sits from the separate i=0 calibration reading), not phi's
@@ -143,7 +136,7 @@ def get_phi(reading_deg):
 
     Returns phi in degrees.
     """
-    return reading_deg - zero_point_reading_deg
+    return reading_deg - angle_scale_at_0th_order
 
 def get_wavelength(order, reading_deg):
     """
@@ -450,7 +443,8 @@ def main():
     then re-run.
     """
 
-    runs = load_data('test_data_Hg.csv')
+    data = f'data_{lamp}.csv'
+    runs = load_data(data)
     groups = group_by_colour(runs)
     group_lambda_bar, group_lambda_bar_unc = compute_group_results(groups)
     print()
