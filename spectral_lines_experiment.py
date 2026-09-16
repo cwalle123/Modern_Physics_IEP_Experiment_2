@@ -24,19 +24,16 @@ plt.rcParams.update({
 #################################################################################################################################################################
 """Constants"""
 
-lamp = 'Hg'                                             # which lamp this run's data.csv belongs to ('Hg' or 'Na')
+lamp = 'Hg'                 # which lamp this run's data.csv belongs to ('Hg' or 'Na')
 
-N_lines_per_mm = 600                                    # lines/mm  (grating used for this setup)
-N_per_m = N_lines_per_mm * 1e3                           # lines/m   (converted once, used throughout)
+Hg_N_lines_per_mm = 500     # lines/mm  (grating used for this setup)
+Na_N_lines_per_mm= 500      # lines/mm  (grating used for this setup)
 
-# alpha is read off the angle scale during autocollimation (see manual step 2:
-# rotate the grating until the 0th order falls on the chosen screen point).
-# It is fixed for the whole session, so -- like d_12 in compute_g.py -- it
-# lives here as a constant rather than being loaded per-row from data.csv.
-alpha_deg = 180.00                                       # deg  (angle scale reading at the 0th-order / 'mirror' position)
-alpha_uncertainty_deg = 0.02                             # deg  (estimated reading uncertainty on the angle scale)
-
-reading_uncertainty_deg = 0.02                           # deg  (estimated reading uncertainty on the angle scale, per line)
+reading_uncertainty_deg = 1                                         # deg  (estimated reading uncertainty on the angle scale, per line)
+angle_scale_at_i_is_0 = 53                                          # deg  (when i = 0, the angle scale reads 53 +-1 deg. This is the 0 point)
+angle_scale_at_0th_order = 59                                       # deg  (At the 0th order, the angle scale reads 59 +-1 deg)
+alpha_deg = abs(angle_scale_at_0th_order - angle_scale_at_i_is_0)   # deg
+alpha_uncertainty_deg = 2 * reading_uncertainty_deg                 # deg  (estimated reading uncertainty on the angle scale)
 
 # Literature values (nm), for the agreement checks and the plots.
 HG_LITERATURE_NM = {
@@ -51,6 +48,8 @@ NA_LITERATURE_NM = {
     'yellow2': 589.59,
 }
 LITERATURE_NM = HG_LITERATURE_NM if lamp == 'Hg' else NA_LITERATURE_NM
+N_lines_per_mm = Hg_N_lines_per_mm if lamp == 'Hg' else Na_N_lines_per_mm
+N_per_m = N_lines_per_mm * 1e3  # lines/m   (converted once, used throughout)
 
 #################################################################################################################################################################
 """Functions"""
@@ -85,25 +84,31 @@ def load_data(filepath):
     """
     Read the raw angle readings from a CSV file.
 
-    Expected columns: colour, order, reading_deg (with a header row to skip).
+    Expected columns: colour, order, reading (with a header row to skip).
+    skipinitialspace=True and the extra .strip() handle "colour, order,
+    reading"-style headers/rows where a space follows each comma.
 
     Returns a list of tuples: (colour, order, reading_deg)
     """
     runs = []
     with open(filepath, newline='') as f:
-        reader = csv.reader(f)
+        reader = csv.reader(f, skipinitialspace=True)
         next(reader)  # skip header row
         for row in reader:
             if not row:  # skip blank lines (e.g. trailing newline at end of file)
                 continue
             colour, order, reading_deg = row
             # Convert order and reading to their proper types before storing
-            runs.append((colour, int(order), float(reading_deg)))
+            runs.append((colour.strip(), int(order), float(reading_deg)))
     return runs
 
 def group_by_colour(runs):
     """
     Group angle readings by colour (i.e. by which spectral line was measured).
+    Needed because the weighted average (compute_group_results) is taken
+    per spectral line, over every order that line was measured at -- it
+    can't be taken across colours, since those are genuinely different
+    wavelengths.
 
     runs : list of (colour, order, reading_deg) tuples
 
@@ -130,7 +135,7 @@ def get_phi(reading_deg):
 
 def get_wavelength(order, reading_deg):
     """
-    Compute lambda from eq. (II8_Que8): 2*cos(alpha)*sin(phi) = -m*N*lambda
+    Compute lambda from 2*cos(alpha)*sin(phi) = -m*N*lambda
 
     order       : diffraction order m (nonzero integer)
     reading_deg : angle scale reading for this spectral line (deg)
@@ -189,11 +194,47 @@ def get_wavelength_uncertainty(order, reading_deg):
     # Convert m -> nm
     return lambda_m_uncertainty * 1e9
 
+def get_u(reading_deg):
+    """
+    u is the angle of reflection, u = alpha - phi (manual, eq. angle_inc_refl).
+    This is the angle later needed for the line-splitting calculation
+    (eq. deltalabda: Delta_lambda = cos(u)/(m*N) * Delta_u).
+
+    Substituting phi = reading_deg - alpha_deg gives u directly in terms of
+    the raw reading: u = alpha - (reading - alpha) = 2*alpha - reading.
+
+    reading_deg : angle scale reading for this spectral line (deg)
+
+    Returns u in degrees.
+    """
+    return 2 * alpha_deg - reading_deg
+
+def get_u_uncertainty():
+    """
+    Propagate uncertainty in alpha_deg and reading_deg into an uncertainty
+    on u, using exact partial-derivative error propagation.
+
+    From u = 2*alpha - reading:
+
+        du/dalpha  =  2
+        du/dreading = -1
+
+        u_u^2 = (2*u_alpha)^2 + u_reading^2
+
+    Same instrument reading uncertainty applies to every row, so this
+    doesn't depend on which line/order you're looking at.
+
+    Returns the uncertainty in u, in degrees.
+    """
+    return math.hypot(2 * alpha_uncertainty_deg, reading_uncertainty_deg)
+
 def compute_group_results(groups):
     """
-    For each colour group: compute lambda and its uncertainty for every
-    order measured, print a summary row per line, and compute the weighted
-    average (per the Appendix formulas) across all orders of that colour.
+    For each colour group: compute phi, lambda, u and their uncertainties
+    for every order measured, print one row per line (manual, experimental
+    phase step 3: colour, order, reading, phi, lambda, u(lambda)), and
+    compute the weighted average of lambda (per the Appendix formulas)
+    across all orders of that colour.
 
         w_i = 1/u(lambda_i)^2
         lambda_bar = sum(w_i * lambda_i) / sum(w_i)
@@ -207,18 +248,24 @@ def compute_group_results(groups):
     """
     group_lambda_bar = {}
     group_lambda_bar_unc = {}
+    u_u = get_u_uncertainty()  # same for every row, so only computed once
 
-    # Print table header
-    print(f"{'colour':>10} {'order':>6} {'phi (deg)':>10} {'lambda (nm)':>14} {'u(lambda)':>10}")
+    print(f"--- {lamp} ---")
+    print(f"{'colour':>10} {'order':>6} {'reading':>10} {'phi':>10} {'lambda':>12} "
+          f"{'u':>10} {'error in lambda':>16} {'error in u':>12}")
 
     for colour in sorted(groups):
         lambdas = []
         uncertainties = []
         for order, reading_deg in groups[colour]:
+            phi_deg = get_phi(reading_deg)
             lam = get_wavelength(order, reading_deg)
             u_lam = get_wavelength_uncertainty(order, reading_deg)
-            phi_deg = get_phi(reading_deg)
-            print(f"{colour:>10} {order:6d} {phi_deg:10.3f} {lam:14.3f} {u_lam:10.3f}")
+            u_deg = get_u(reading_deg)
+
+            print(f"{colour:>10} {order:6d} {reading_deg:10.3f} {phi_deg:10.3f} {lam:12.3f} "
+                  f"{u_deg:10.3f} {u_lam:16.3f} {u_u:12.3f}")
+
             lambdas.append(lam)
             uncertainties.append(u_lam)
 
@@ -325,14 +372,12 @@ def get_delta_lambda(order, reading_deg, delta_u_rad):
     (deltalabda): Delta_lambda = cos(u)/(m*N) * Delta_u
 
     order        : diffraction order m of the doublet
-    reading_deg  : angle scale reading for this line (used to get u = alpha - phi)
+    reading_deg  : angle scale reading for this line (used to get u via get_u)
     delta_u_rad  : angular separation of the doublet on the camera (rad)
 
     Returns Delta_lambda in nm.
     """
-    alpha_rad = math.radians(alpha_deg)
-    phi_rad = math.radians(get_phi(reading_deg))
-    u_rad = alpha_rad - phi_rad
+    u_rad = math.radians(get_u(reading_deg))
     delta_lambda_m = math.cos(u_rad) / (order * N_per_m) * delta_u_rad
     return delta_lambda_m * 1e9
 
@@ -352,10 +397,8 @@ def get_delta_lambda_uncertainty(order, reading_deg, delta_u_rad, u_delta_u_rad)
 
     Returns the uncertainty in Delta_lambda, in nm.
     """
-    alpha_rad = math.radians(alpha_deg)
-    phi_rad = math.radians(get_phi(reading_deg))
-    u_rad = alpha_rad - phi_rad
-    u_u_rad = math.radians(reading_uncertainty_deg)  # reuses the reading uncertainty for u
+    u_rad = math.radians(get_u(reading_deg))
+    u_u_rad = math.radians(get_u_uncertainty())
 
     d_du = -math.sin(u_rad) / (order * N_per_m) * delta_u_rad
     d_ddu = math.cos(u_rad) / (order * N_per_m)
@@ -421,10 +464,15 @@ def plot_wavelength_vs_order(groups):
 
 def main():
     """
-    Run the full analysis pipeline:
+    Run the full analysis pipeline for whichever lamp is currently set in
+    the Constants section:
     load data -> group by colour -> compute lambda per line (algebraic
     method) and the weighted average per colour -> check agreement with
     literature -> plot results.
+
+    To process the other lamp, change `lamp` (and re-measure alpha_deg) in
+    the Constants section and point Data/data.csv at that lamp's readings,
+    then re-run.
     """
 
     runs = load_data('Data/data.csv')
