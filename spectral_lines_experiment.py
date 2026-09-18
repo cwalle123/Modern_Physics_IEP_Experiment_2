@@ -24,22 +24,26 @@ plt.rcParams.update({
 #################################################################################################################################################################
 """Constants"""
 
-lamp = 'Hg'                 # which lamp this run's data.csv belongs to ('Hg' or 'Na')
-
 Hg_N_lines_per_mm = 1800    # lines/mm  (grating used for this setup)
-Na_N_lines_per_mm= 1800     # lines/mm  (grating used for this setup)
+Na_N_lines_per_mm = 1800    # lines/mm  (grating used for this setup)
 
 reading_uncertainty_deg = 1                                                 # deg  (estimated reading uncertainty on the angle scale, per line)
 angle_scale_at_i_is_0_Hg = 53                                               # deg  (when i = 0, the angle scale reads 53 +-1 deg. This is the 0 point)
 angle_scale_at_i_is_0_Na = 53                                               # deg  (when i = 0, the angle scale reads 53 +-1 deg. This is the 0 point)
-angle_scale_at_0th_order_Hg = 63                                            # deg  (At the 0th order, the angle scale reads 59 +-1 deg)
-angle_scale_at_0th_order_Na = 62                                            # deg  (At the 0th order, the angle scale reads 59 +-1 deg)
+angle_scale_at_0th_order_Hg = 63                                            # deg  (At the 0th order, the angle scale reads 63 +-1 deg)
+angle_scale_at_0th_order_Na = 62                                            # deg  (At the 0th order, the angle scale reads 62 +-1 deg)
 alpha_deg_Hg = abs(angle_scale_at_0th_order_Hg - angle_scale_at_i_is_0_Hg)  # deg
 alpha_deg_Na = abs(angle_scale_at_0th_order_Na - angle_scale_at_i_is_0_Na)  # deg
 alpha_uncertainty_deg = 2 * reading_uncertainty_deg                         # deg  (estimated reading uncertainty on the angle scale)
-camera_pixel_size_m = 3.45 * 10**-6  # m / pixel
-Na_pixels_between_yellow_1_and_yellow_2 = 116  # pixels (measured from the camera image)
-Hg_pixels_between_yellow_1_and_yellow_2 = 101  # pixels (measured from the camera image)
+
+camera_pixel_size_m = 3.45 * 10**-6                                         # m / pixel
+Na_pixels_between_yellow_1_and_yellow_2 = 116                               # pixels (measured from the camera image)
+Hg_pixels_between_yellow_1_and_yellow_2 = 101                               # pixels (measured from the camera image)
+pixel_reading_uncertainty_px = 5                                            # px  (estimated uncertainty on each line's pixel position on the camera)
+
+f2_focal_length_m = 0.100  # m  (focal length of imaging lens f2, used to convert the camera pixel separation of the doublet into an angular separation Delta_u)
+
+grating_width_mm = 50  # mm  (total grating width)
 
 # Literature values (nm), for the agreement checks and the plots.
 HG_LITERATURE_NM = {
@@ -53,12 +57,34 @@ NA_LITERATURE_NM = {
     'yellow1': 589.00,
     'yellow2': 589.59,
 }
-LITERATURE_NM = HG_LITERATURE_NM if lamp == 'Hg' else NA_LITERATURE_NM
-N_lines_per_mm = Hg_N_lines_per_mm if lamp == 'Hg' else Na_N_lines_per_mm
-angle_scale_at_i_is_0 = angle_scale_at_i_is_0_Hg if lamp == 'Hg' else angle_scale_at_i_is_0_Na
-angle_scale_at_0th_order = angle_scale_at_0th_order_Hg if lamp == 'Hg' else angle_scale_at_0th_order_Na
-alpha_deg = alpha_deg_Hg if lamp == 'Hg' else alpha_deg_Na
-N_per_m = N_lines_per_mm * 1e3  # lines/m   (converted once, used throughout)
+
+# Lamp-dependent working constants. These are (re)populated by configure_lamp()
+lamp = None
+N_lines_per_mm = None
+angle_scale_at_0th_order = None
+alpha_deg = None
+N_per_m = None
+LITERATURE_NM = None
+doublet_pixels = None
+N_tot = None
+
+def configure_lamp(lamp_name):
+    """
+    Set every lamp-dependent module-level constant for lamp_name ('Hg' or
+    'Na'). Must be called before any of the calculation functions below,
+    and again to switch lamps -- this is what main() does in its loop.
+    """
+    global lamp, N_lines_per_mm, angle_scale_at_0th_order, alpha_deg
+    global N_per_m, LITERATURE_NM, doublet_pixels, N_tot
+
+    lamp = lamp_name
+    N_lines_per_mm = Hg_N_lines_per_mm if lamp == 'Hg' else Na_N_lines_per_mm
+    angle_scale_at_0th_order = angle_scale_at_0th_order_Hg if lamp == 'Hg' else angle_scale_at_0th_order_Na
+    alpha_deg = alpha_deg_Hg if lamp == 'Hg' else alpha_deg_Na
+    N_per_m = N_lines_per_mm * 1e3  # lines/m
+    LITERATURE_NM = HG_LITERATURE_NM if lamp == 'Hg' else NA_LITERATURE_NM
+    doublet_pixels = Hg_pixels_between_yellow_1_and_yellow_2 if lamp == 'Hg' else Na_pixels_between_yellow_1_and_yellow_2
+    N_tot = N_lines_per_mm * grating_width_mm  # total illuminated grating lines
 
 #################################################################################################################################################################
 """Functions"""
@@ -343,6 +369,35 @@ def print_literature_agreement_table(group_lambda_bar, group_lambda_bar_unc):
               f"{v:8.3f} {u_v:8.3f} {verdict:>12}")
 
 
+def get_delta_u(pixels):
+    """
+    Convert the camera-measured pixel separation between two doublet lines
+    into an angular separation Delta_u, using the small-angle relation for
+    a lens of focal length f2:
+
+        Delta_u ~= (pixels * camera_pixel_size_m) / f2_focal_length_m
+
+    pixels : pixel separation between the two lines on the camera image
+
+    Returns Delta_u in radians.
+    """
+    return (pixels * camera_pixel_size_m) / f2_focal_length_m
+
+def get_delta_u_uncertainty():
+    """
+    Propagate the per-line pixel-position uncertainty into an uncertainty
+    on Delta_u. The pixel separation is the difference of two independently
+    read line positions, each with uncertainty pixel_reading_uncertainty_px,
+    so their contributions combine in quadrature:
+
+        u(pixels) = sqrt(pixel_reading_uncertainty_px^2 + pixel_reading_uncertainty_px^2)
+        u(Delta_u) = u(pixels) * camera_pixel_size_m / f2_focal_length_m
+
+    Returns the uncertainty in Delta_u, in radians.
+    """
+    u_pixels = math.hypot(pixel_reading_uncertainty_px, pixel_reading_uncertainty_px)
+    return (u_pixels * camera_pixel_size_m) / f2_focal_length_m
+
 def get_delta_lambda(order, reading_deg, delta_u_rad):
     """
     Compute the wavelength splitting of a resolved doublet from eq.
@@ -407,13 +462,80 @@ def theoretical_resolving_power(order, N_total_lines):
     return order * N_total_lines
 
 
-def plot_wavelength_vs_order(groups):
+def analyse_doublet(groups, group_lambda_bar):
+    """
+    Section "study the splitting of the yellow Hg lines" / "find splitting
+    for all [Na] lines": use the camera pixel separation between the two
+    yellow lines (doublet_pixels, set per-lamp by configure_lamp) to get
+    Delta_u, then Delta_lambda (eq. deltalabda) and its uncertainty, then
+    compare the measured and theoretical resolving power.
+
+    Uses the order at which yellow1/yellow2 were actually measured (from
+    the loaded data) and their average reading as the doublet's angle.
+
+    groups            : dict mapping colour -> list of (order, reading_deg)
+    group_lambda_bar  : dict colour -> weighted-average lambda (nm), from
+                         compute_group_results, used for the doublet's mean
+                         wavelength in R = lambda / Delta_lambda
+
+    Returns the results dict, or None if this lamp has no yellow1/yellow2
+    pair in the data to analyse.
+    """
+    if 'yellow1' not in groups or 'yellow2' not in groups:
+        return None
+
+    # Use the (order, reading) at which the doublet was measured. Both
+    # lines are read at the same order; take the first reading for each
+    # and their order (they should match -- see the sanity check below).
+    order1, reading1 = groups['yellow1'][0]
+    order2, reading2 = groups['yellow2'][0]
+    assert order1 == order2, "yellow1/yellow2 were not measured at the same order"
+    order = order1
+    reading_deg = (reading1 + reading2) / 2  # average angle-scale reading for the doublet
+
+    delta_u_rad = get_delta_u(doublet_pixels)
+    u_delta_u_rad = get_delta_u_uncertainty()
+
+    delta_lambda_nm = get_delta_lambda(order, reading_deg, delta_u_rad)
+    u_delta_lambda_nm = get_delta_lambda_uncertainty(order, reading_deg, delta_u_rad, u_delta_u_rad)
+
+    lam_mean_nm = (group_lambda_bar['yellow1'] + group_lambda_bar['yellow2']) / 2
+
+    R_measured = resolving_power(lam_mean_nm, abs(delta_lambda_nm))
+    R_theor = theoretical_resolving_power(abs(order), N_tot)
+
+    print(f"\n--- {lamp}: yellow doublet splitting (order m = {order}) ---")
+    print(f"pixel separation on camera   : {doublet_pixels} px")
+    print(f"Delta_u                      : {math.degrees(delta_u_rad):.5f} +/- {math.degrees(u_delta_u_rad):.5f} deg")
+    print(f"Delta_lambda                 : {delta_lambda_nm:.5f} +/- {u_delta_lambda_nm:.5f} nm")
+    print(f"mean lambda (yellow1,2)      : {lam_mean_nm:.3f} nm")
+    print(f"Measured resolving power R   : {R_measured:.0f}")
+    print(f"Theoretical resolving power  : {R_theor:.0f}  (N_tot = {N_tot:.0f} lines, from {grating_width_mm} mm grating width)")
+
+    return {
+        'order': order,
+        'delta_u_rad': delta_u_rad,
+        'u_delta_u_rad': u_delta_u_rad,
+        'delta_lambda_nm': delta_lambda_nm,
+        'u_delta_lambda_nm': u_delta_lambda_nm,
+        'lam_mean_nm': lam_mean_nm,
+        'R_measured': R_measured,
+        'R_theor': R_theor,
+    }
+
+
+def plot_wavelength_vs_order(groups, save_path=None, show=True):
     """
     Plot the individual lambda measurements (with error bars) against
     order m, one series per colour, with literature values overlaid as
     dotted horizontal lines.
 
-    groups : dict mapping colour -> list of (order, reading_deg) tuples
+    groups    : dict mapping colour -> list of (order, reading_deg) tuples
+    save_path : if given, also save the figure here (in addition to
+                displaying it, unless show=False)
+    show      : if True (default), display the figure with plt.show();
+                set False for headless runs where only the saved file
+                is wanted
     """
     fig, ax = plt.subplots()
 
@@ -434,38 +556,48 @@ def plot_wavelength_vs_order(groups):
     _style_axes(ax)
     ax.legend()
     fig.tight_layout()
-    plt.show()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150)
+    if show:
+        plt.show()  # blocks until the figure window is closed, then continues
+    else:
+        plt.close(fig)
 
 #################################################################################################################################################################
 """Main"""
 
 def main():
     """
-    Run the full analysis pipeline for whichever lamp is currently set in
-    the Constants section:
-    load data -> group by colour -> compute lambda per line (algebraic
-    method) and the weighted average per colour -> check agreement with
-    literature -> plot results.
-
-    To process the other lamp, change `lamp` (and re-measure alpha_deg) in
-    the Constants section and point Data/data.csv at that lamp's readings,
-    then re-run.
+    Run the full analysis pipeline for both lamps in turn:
+    configure lamp constants -> load data -> group by colour -> compute
+    lambda per line (algebraic method) and the weighted average per colour
+    -> check agreement with literature -> plot results -> analyse the
+    yellow-doublet splitting and resolving power.
     """
+    all_results = {}
 
-    data = f'data_{lamp}.csv'
-    runs = load_data(data)
-    groups = group_by_colour(runs)
-    group_lambda_bar, group_lambda_bar_unc = compute_group_results(groups)
-    print()
-    print_literature_agreement_table(group_lambda_bar, group_lambda_bar_unc)
-    plot_wavelength_vs_order(groups)
+    for lamp_name in ('Hg', 'Na'):
+        configure_lamp(lamp_name)
 
-    # Example: resolving power for a resolved doublet (replace with real
-    # Delta_u measured from the camera image, in radians)
-    # delta_lam = get_delta_lambda(order=1, reading_deg=..., delta_u_rad=...)
-    # R_measured = resolving_power(lam_nm=577.0, delta_lam_nm=delta_lam)
-    # R_theor = theoretical_resolving_power(order=1, N_total_lines=N_lines_per_mm * 30)  # e.g. 30 mm illuminated
-    # print(f"Measured R ~ {R_measured:.0f}, theoretical R = {R_theor:.0f}")
+        data = f'data_{lamp_name}.csv'
+        runs = load_data(data)
+        groups = group_by_colour(runs)
+        group_lambda_bar, group_lambda_bar_unc = compute_group_results(groups)
+        print()
+        print_literature_agreement_table(group_lambda_bar, group_lambda_bar_unc)
+        plot_wavelength_vs_order(groups, save_path=f'wavelength_vs_order_{lamp_name}.png')
+
+        doublet_result = analyse_doublet(groups, group_lambda_bar)
+
+        all_results[lamp_name] = {
+            'group_lambda_bar': group_lambda_bar,
+            'group_lambda_bar_unc': group_lambda_bar_unc,
+            'doublet': doublet_result,
+        }
+        print()
+
+    return all_results
 
 if __name__ == '__main__':
     main()
