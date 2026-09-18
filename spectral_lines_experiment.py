@@ -27,13 +27,19 @@ plt.rcParams.update({
 lamp = 'Hg'                 # which lamp this run's data.csv belongs to ('Hg' or 'Na')
 
 Hg_N_lines_per_mm = 1800    # lines/mm  (grating used for this setup)
-Na_N_lines_per_mm= 500      # lines/mm  (grating used for this setup)
+Na_N_lines_per_mm= 1800     # lines/mm  (grating used for this setup)
 
-reading_uncertainty_deg = 1                                         # deg  (estimated reading uncertainty on the angle scale, per line)
-angle_scale_at_i_is_0 = 53                                          # deg  (when i = 0, the angle scale reads 53 +-1 deg. This is the 0 point)
-angle_scale_at_0th_order = 59                                       # deg  (At the 0th order, the angle scale reads 59 +-1 deg)
-alpha_deg = abs(angle_scale_at_0th_order - angle_scale_at_i_is_0)   # deg
-alpha_uncertainty_deg = 2 * reading_uncertainty_deg                 # deg  (estimated reading uncertainty on the angle scale)
+reading_uncertainty_deg = 1                                                 # deg  (estimated reading uncertainty on the angle scale, per line)
+angle_scale_at_i_is_0_Hg = 53                                               # deg  (when i = 0, the angle scale reads 53 +-1 deg. This is the 0 point)
+angle_scale_at_i_is_0_Na = 53                                               # deg  (when i = 0, the angle scale reads 53 +-1 deg. This is the 0 point)
+angle_scale_at_0th_order_Hg = 63                                            # deg  (At the 0th order, the angle scale reads 59 +-1 deg)
+angle_scale_at_0th_order_Na = 62                                            # deg  (At the 0th order, the angle scale reads 59 +-1 deg)
+alpha_deg_Hg = abs(angle_scale_at_0th_order_Hg - angle_scale_at_i_is_0_Hg)  # deg
+alpha_deg_Na = abs(angle_scale_at_0th_order_Na - angle_scale_at_i_is_0_Na)  # deg
+alpha_uncertainty_deg = 2 * reading_uncertainty_deg                         # deg  (estimated reading uncertainty on the angle scale)
+camera_pixel_size_m = 3.45 * 10**-6  # m / pixel
+Na_pixels_between_yellow_1_and_yellow_2 = 116  # pixels (measured from the camera image)
+Hg_pixels_between_yellow_1_and_yellow_2 = 101  # pixels (measured from the camera image)
 
 # Literature values (nm), for the agreement checks and the plots.
 HG_LITERATURE_NM = {
@@ -49,6 +55,9 @@ NA_LITERATURE_NM = {
 }
 LITERATURE_NM = HG_LITERATURE_NM if lamp == 'Hg' else NA_LITERATURE_NM
 N_lines_per_mm = Hg_N_lines_per_mm if lamp == 'Hg' else Na_N_lines_per_mm
+angle_scale_at_i_is_0 = angle_scale_at_i_is_0_Hg if lamp == 'Hg' else angle_scale_at_i_is_0_Na
+angle_scale_at_0th_order = angle_scale_at_0th_order_Hg if lamp == 'Hg' else angle_scale_at_0th_order_Na
+alpha_deg = alpha_deg_Hg if lamp == 'Hg' else alpha_deg_Na
 N_per_m = N_lines_per_mm * 1e3  # lines/m   (converted once, used throughout)
 
 #################################################################################################################################################################
