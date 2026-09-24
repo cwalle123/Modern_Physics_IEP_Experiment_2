@@ -35,6 +35,7 @@ angle_scale_at_0th_order_Na = 62                                            # de
 alpha_deg_Hg = abs(angle_scale_at_0th_order_Hg - angle_scale_at_i_is_0_Hg)  # deg
 alpha_deg_Na = abs(angle_scale_at_0th_order_Na - angle_scale_at_i_is_0_Na)  # deg
 alpha_uncertainty_deg = 2 * reading_uncertainty_deg                         # deg  (estimated reading uncertainty on the angle scale)
+cov_alpha_phi_deg2 = -reading_uncertainty_deg ** 2                          # deg^2 
 
 camera_pixel_size_m = 3.45 * 10**-6                                         # m / pixel
 Na_pixels_between_yellow_1_and_yellow_2 = 116                               # pixels (measured from the camera image)
@@ -56,6 +57,26 @@ HG_LITERATURE_NM = {
 NA_LITERATURE_NM = {
     'yellow1': 589.00,
     'yellow2': 589.59,
+}
+
+# Plot style per spectral line: colours match the colour seen in the
+# experiment (darkened slightly for visibility on white). The two yellow
+# lines get clearly different shades (gold vs orange), different markers
+# and a small horizontal offset, since they sit at the same order and
+# nearly the same wavelength and would otherwise overlap.
+LINE_STYLES = {
+    'violet':  {'color': '#7F3FBF', 'marker': 'o', 'offset':  0.00},
+    'blue':    {'color': '#1F4FD6', 'marker': 'o', 'offset':  0.00},
+    'green':   {'color': '#1A9E3A', 'marker': 'o', 'offset':  0.00},
+    'yellow1': {'color': '#D4A800', 'marker': 's', 'offset': -0.06},
+    'yellow2': {'color': '#F26B00', 'marker': 'D', 'offset': +0.06},
+}
+
+# Legend labels per lamp
+LINE_LABELS = {
+    'Hg': {'violet': 'Violet', 'blue': 'Blue', 'green': 'Green',
+           'yellow1': 'Yellow 1', 'yellow2': 'Yellow 2'},
+    'Na': {'yellow1': r'D$_2$ (Yellow 1)', 'yellow2': r'D$_1$ (Yellow 2)'},
 }
 
 # Lamp-dependent working constants. These are (re)populated by configure_lamp()
@@ -159,13 +180,16 @@ def group_by_colour(runs):
 
 def get_phi(reading_deg):
     """
-    phi is the angle between a given line's reading and the 0th-order
-    ('mirror') reading -- i.e. the raw angle-scale value recorded when the
-    grating was rotated so the 0th order landed on the chosen point
+    phi is the angle through which the grating was rotated away from the
+    0th-order position to bring this spectral line onto the chosen point:
 
-    This is NOT alpha_deg: alpha is a different quantity (how far the
-    grating sits from the separate i=0 calibration reading), not phi's
-    zero point on the scale.
+        phi = reading_deg - angle_scale_at_0th_order
+
+    i.e. the line's angle-scale reading minus the angle-scale reading at
+    which the 0th order sat on that same point.
+
+    This is NOT alpha_deg: alpha is the 0th-order reading minus the
+    separate i = 0 reading.
 
     reading_deg : angle scale reading for this spectral line (deg)
 
@@ -191,27 +215,31 @@ def get_wavelength(order, reading_deg):
 
 def get_wavelength_uncertainty(order, reading_deg):
     """
-    Propagate uncertainty in alpha_deg and phi (= reading_deg - alpha_deg)
-    into an uncertainty on lambda, using exact partial-derivative
-    (first-order) error propagation:
+    Propagate uncertainty in alpha and phi (= reading_deg -
+    angle_scale_at_0th_order) into an uncertainty on lambda, using
+    first-order (partial-derivative) error propagation, including the
+    covariance between alpha and phi:
 
-        u_lambda^2 = (dlambda/dalpha)^2 * u_alpha^2 + (dlambda/dphi)^2 * u_phi^2
+        u_lambda^2 = (dlambda/dalpha)^2 * u_alpha^2
+                   + (dlambda/dphi)^2   * u_phi^2
+                   + 2 * (dlambda/dalpha) * (dlambda/dphi) * cov(alpha, phi)
 
     From lambda = -2*cos(alpha)*sin(phi) / (m*N):
 
         dlambda/dalpha =  2*sin(alpha)*sin(phi) / (m*N)
         dlambda/dphi   = -2*cos(alpha)*cos(phi) / (m*N)
 
-    phi's own uncertainty combines the line reading and the zero-point
+    phi's own uncertainty combines the line reading and the 0th-order
     reading (angle_scale_at_0th_order) in quadrature, since both are
     independent raw angle-scale readings with the same instrument
     uncertainty:
 
         u_phi = sqrt(reading_uncertainty_deg^2 + reading_uncertainty_deg^2)
 
-    This treats the input uncertainties as independent (adding their
-    contributions in quadrature), unlike a simple sum, which implicitly
-    assumes worst-case correlated errors and overestimates u_lambda.
+    The 0th-order reading appears in both alpha (with a + sign) and phi
+    (with a - sign), so alpha and phi are not independent:
+
+        cov(alpha, phi) = -reading_uncertainty_deg^2
 
     order       : diffraction order m (nonzero integer)
     reading_deg : angle scale reading for this spectral line (deg)
@@ -222,15 +250,17 @@ def get_wavelength_uncertainty(order, reading_deg):
     phi_rad = math.radians(get_phi(reading_deg))
     u_alpha_rad = math.radians(alpha_uncertainty_deg)
     u_phi_rad = math.radians(math.hypot(reading_uncertainty_deg, reading_uncertainty_deg))
+    cov_alpha_phi_rad2 = cov_alpha_phi_deg2 * math.radians(1) ** 2
 
     # Partial derivatives of lambda (in m) with respect to each input
     dlambda_dalpha = 2 * math.sin(alpha_rad) * math.sin(phi_rad) / (order * N_per_m)
     dlambda_dphi = -2 * math.cos(alpha_rad) * math.cos(phi_rad) / (order * N_per_m)
 
-    # Combine contributions in quadrature (independent-error propagation)
+    # Combine contributions, including the alpha-phi covariance term
     lambda_m_uncertainty = math.sqrt(
         (dlambda_dalpha * u_alpha_rad) ** 2 +
-        (dlambda_dphi * u_phi_rad) ** 2
+        (dlambda_dphi * u_phi_rad) ** 2 +
+        2 * dlambda_dalpha * dlambda_dphi * cov_alpha_phi_rad2
     )
 
     # Convert m -> nm
@@ -242,7 +272,7 @@ def get_u(reading_deg):
     This is the angle later needed for the line-splitting calculation
     (Delta_lambda = cos(u)/(m*N) * Delta_u).
 
-    Built directly from get_phi (reading_deg - zero_point_reading_deg),
+    Built directly from get_phi (reading_deg - angle_scale_at_0th_order),
     so it automatically stays consistent with however phi is defined --
     no separate algebraic shortcut to keep in sync.
 
@@ -254,26 +284,24 @@ def get_u(reading_deg):
 
 def get_u_uncertainty():
     """
-    Propagate uncertainty in alpha_deg, reading_deg and the zero-point
-    reading into an uncertainty on u, using exact partial-derivative error
-    propagation.
+    Propagate uncertainty in alpha and phi into an uncertainty on u,
+    including their covariance. From u = alpha - phi:
 
-    From u = alpha - phi = alpha - reading + zero_point_reading_deg:
+        du/dalpha =  1
+        du/dphi   = -1
 
-        du/dalpha       =  1
-        du/dreading      = -1
-        du/dzero_point   =  1
+        u_u^2 = u_alpha^2 + u_phi^2 - 2 * cov(alpha, phi)
 
-        u_u^2 = u_alpha^2 + u_reading^2 + u_zero_point^2
-
-    zero_point_reading_deg is itself just a raw angle-scale reading, so it
-    carries the same reading_uncertainty_deg as any other row. Same
-    instrument reading uncertainty applies to every row, so this doesn't
-    depend on which line/order you're looking at.
+    with u_phi = sqrt(2) * reading_uncertainty_deg (line reading and
+    0th-order reading in quadrature) and cov(alpha, phi) =
+    -reading_uncertainty_deg^2, since the 0th-order reading appears in
+    both. The same instrument reading uncertainty applies to every row,
+    so this doesn't depend on which line/order you're looking at.
 
     Returns the uncertainty in u, in degrees.
     """
-    return math.sqrt(alpha_uncertainty_deg ** 2 + reading_uncertainty_deg ** 2 + reading_uncertainty_deg ** 2)
+    u_phi_deg = math.hypot(reading_uncertainty_deg, reading_uncertainty_deg)
+    return math.sqrt(alpha_uncertainty_deg ** 2 + u_phi_deg ** 2 - 2 * cov_alpha_phi_deg2)
 
 def weighted_average(values, uncertainties):
     """
@@ -527,8 +555,12 @@ def analyse_doublet(groups, group_lambda_bar):
 def plot_wavelength_vs_order(groups, save_path=None, show=True):
     """
     Plot the individual lambda measurements (with error bars) against
-    order m, one series per colour, with literature values overlaid as
-    dotted horizontal lines.
+    order m, one series per spectral line, with literature values overlaid
+    as dotted horizontal lines in the same colour.
+
+    Each line is drawn in the colour it had in the experiment (LINE_STYLES).
+    The two yellow lines are shifted slightly left/right of their order and
+    use different markers so they don't overlap.
 
     groups    : dict mapping colour -> list of (order, reading_deg) tuples
     save_path : if given, also save the figure here (in addition to
@@ -538,22 +570,34 @@ def plot_wavelength_vs_order(groups, save_path=None, show=True):
                 is wanted
     """
     fig, ax = plt.subplots()
+    default_style = {'color': 'grey', 'marker': 'o', 'offset': 0.0}
 
-    for colour in sorted(groups):
-        orders = [order for order, reading_deg in groups[colour]]
+    # Plot lines in order of wavelength so the legend reads violet -> yellow
+    for colour in sorted(groups, key=lambda c: LITERATURE_NM.get(c, float('inf'))):
+        style = LINE_STYLES.get(colour, default_style)
+        label = LINE_LABELS.get(lamp, {}).get(colour, colour)
+
+        orders = [order + style['offset'] for order, reading_deg in groups[colour]]
         lambdas = [get_wavelength(order, reading_deg) for order, reading_deg in groups[colour]]
         uncertainties = [get_wavelength_uncertainty(order, reading_deg)
                           for order, reading_deg in groups[colour]]
 
-        line = ax.errorbar(orders, lambdas, yerr=uncertainties, fmt='o',
-                            markersize=4, capsize=3, label=colour)
+        ax.errorbar(orders, lambdas, yerr=uncertainties,
+                    fmt=style['marker'], color=style['color'],
+                    markersize=6, capsize=3, label=label)
         if colour in LITERATURE_NM:
-            ax.axhline(LITERATURE_NM[colour], linestyle=':', linewidth=1,
-                        color=line[0].get_color())
+            ax.axhline(LITERATURE_NM[colour], linestyle=':', linewidth=1.2,
+                        color=style['color'])
 
     ax.set_xlabel('order $m$')
     ax.set_ylabel(r'$\lambda$ (nm)')
     _style_axes(ax)
+
+    # Only show the integer orders that were actually measured on the x-axis
+    measured_orders = sorted({order for pts in groups.values() for order, _ in pts})
+    ax.set_xticks(measured_orders)
+    ax.set_xlim(min(measured_orders) - 0.5, max(measured_orders) + 0.5)
+
     ax.legend()
     fig.tight_layout()
 
